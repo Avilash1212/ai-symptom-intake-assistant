@@ -83,14 +83,21 @@ let driver;
 async function getDriver() {
   if (driver) return driver;
   if (config.databaseUrl) {
+    if (/\[?YOUR[-_]PASSWORD\]?/i.test(config.databaseUrl)) throw new Error('DATABASE_URL still contains the [YOUR-PASSWORD] placeholder.');
     const { default: pg } = await import('pg');
     const local = /localhost|127\.0\.0\.1/.test(config.databaseUrl);
+    // An sslmode in the URL (Vercel's Supabase integration adds
+    // ?sslmode=require) makes pg verify the certificate chain, which fails
+    // against Supabase's pooler. Strip it and configure SSL below instead.
+    const url = new URL(config.databaseUrl);
+    for (const p of ['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'supa', 'pgbouncer']) url.searchParams.delete(p);
     const pool = new pg.Pool({
-      connectionString: config.databaseUrl,
+      connectionString: url.toString(),
       ssl: local ? false : { rejectUnauthorized: false },
       // Serverless functions each hold their own pool; keep it small so the
       // free database's connection limit is not exhausted.
       max: config.isVercel ? 1 : 5,
+      connectionTimeoutMillis: 10000,
     });
     driver = {
       query: (sql, params) => pool.query(sql, params),
@@ -154,6 +161,25 @@ export function ready() {
     throw err;
   });
   return readyPromise;
+}
+
+/**
+ * Plain-language explanation of a database failure for the health check.
+ * Never includes the connection string or password.
+ */
+export function describeDbError(err) {
+  const code = err?.code || '';
+  const msg = String(err?.message || '');
+  if (msg.includes('must be set on Vercel')) return 'DATABASE_URL is not set in the Vercel environment variables.';
+  if (msg.includes('[YOUR-PASSWORD] placeholder')) return 'DATABASE_URL still contains [YOUR-PASSWORD]. Replace it (including the brackets) with your Supabase database password.';
+  if (err instanceof TypeError && /Invalid URL/i.test(msg)) return 'DATABASE_URL is not a valid connection string. Copy it again from Supabase (Connect > Transaction pooler).';
+  if (code === '28P01' || /password authentication failed/i.test(msg)) return 'Wrong database password in DATABASE_URL. Check that [YOUR-PASSWORD] was replaced with your Supabase database password.';
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'Database host not found. Check the host part of DATABASE_URL.';
+  if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return 'Database host unreachable. Use the Supabase "Transaction pooler" string (pooler.supabase.com, port 6543), not the direct connection.';
+  if (code === 'ECONNREFUSED' || /timeout/i.test(msg)) return 'Could not connect to the database in time. Check the host and port (6543) in DATABASE_URL and that the Supabase project is not paused.';
+  if (/tenant or user not found/i.test(msg)) return 'Supabase does not recognise the user in DATABASE_URL. Copy the Transaction pooler string again; the user should look like postgres.<project-ref>.';
+  if (/certificate|SSL|TLS/i.test(msg)) return 'SSL error connecting to the database.';
+  return `Database error${code ? ` (${code})` : ''}.`;
 }
 
 export async function closeDb() {

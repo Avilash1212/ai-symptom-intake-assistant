@@ -4,7 +4,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { config } from './config.js';
-import { ready } from './db.js';
+import { describeDbError, ready } from './db.js';
 import { ah } from './asyncHandler.js';
 import { aiEnabled } from './ai.js';
 import { patientRouter } from './routes/patient.js';
@@ -40,7 +40,17 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-app.get('/api/health', (req, res) => res.json({ ok: true, aiEnabled }));
+// Reports whether the server can reach its database, in plain language,
+// to make deployment problems easy to diagnose. Contains no secrets.
+app.get('/api/health', async (req, res) => {
+  try {
+    await ready();
+    res.json({ ok: true, database: 'connected', aiEnabled, jwtSecretSet: Boolean(process.env.JWT_SECRET) });
+  } catch (err) {
+    console.error('[health] database check failed:', err);
+    res.status(503).json({ ok: false, database: describeDbError(err), aiEnabled, jwtSecretSet: Boolean(process.env.JWT_SECRET) });
+  }
+});
 app.use('/api', ah(async (req, res, next) => {
   await ready();
   next();
