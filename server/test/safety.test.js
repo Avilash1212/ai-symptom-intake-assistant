@@ -8,6 +8,7 @@ test('flags emergency warning signs', () => {
   assert.equal(detectRedFlags('My face is drooping and I have slurred speech'), 'Possible stroke signs');
   assert.equal(detectRedFlags('I have been thinking about suicide'), 'Thoughts of self-harm or suicide');
   assert.equal(detectRedFlags('This is the worst headache of my life'), 'Sudden severe headache');
+  assert.equal(detectRedFlags('Dull ache; Loss of bladder control'), 'Loss of bladder or bowel control');
 });
 
 test('ignores simple negations and routine symptoms', () => {

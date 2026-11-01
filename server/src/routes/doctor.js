@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
-import { db, nowIso } from '../db.js';
+import { nowIso, one, query } from '../db.js';
+import { ah } from '../asyncHandler.js';
 import { DOCTOR_COOKIE, clearCookie, requireDoctor, setDoctorCookie } from '../auth.js';
 import { getResponses, getSession } from '../sessions.js';
 import { doctorMetrics, patientMetrics } from '../analytics.js';
@@ -13,15 +14,15 @@ const loginLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHe
 // Compared against when the email is unknown so response time does not reveal which emails exist.
 const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
 
-doctorRouter.post('/login', loginLimiter, async (req, res) => {
+doctorRouter.post('/login', loginLimiter, ah(async (req, res) => {
   const email = String(req.body?.email ?? '').trim().toLowerCase();
   const password = String(req.body?.password ?? '');
-  const doctor = db.prepare('SELECT * FROM doctors WHERE email = ?').get(email);
+  const doctor = await one('SELECT * FROM doctors WHERE email = $1', [email]);
   const ok = await bcrypt.compare(password, doctor?.password_hash ?? DUMMY_HASH);
   if (!doctor || !ok) return res.status(401).json({ error: 'Incorrect email or password.' });
   setDoctorCookie(res, doctor);
   res.json({ id: doctor.id, name: doctor.name, email: doctor.email });
-});
+}));
 
 doctorRouter.post('/logout', (req, res) => {
   clearCookie(res, DOCTOR_COOKIE);
@@ -31,35 +32,36 @@ doctorRouter.post('/logout', (req, res) => {
 // Everything below requires an authenticated doctor.
 doctorRouter.use(requireDoctor);
 
-doctorRouter.get('/me', (req, res) => {
-  const doctor = db.prepare('SELECT id, name, email FROM doctors WHERE id = ?').get(req.doctorId);
+doctorRouter.get('/me', ah(async (req, res) => {
+  const doctor = await one('SELECT id, name, email FROM doctors WHERE id = $1', [req.doctorId]);
   if (!doctor) return res.status(401).json({ error: 'Authentication required.' });
   res.json({ ...doctor, aiEnabled });
-});
+}));
 
-doctorRouter.get('/submissions', (req, res) => {
-  const rows = db.prepare(`
+doctorRouter.get('/submissions', ah(async (req, res) => {
+  const rows = await query(`
     SELECT id, code, status, review_status, submitted_at, urgent_reason, summary_json
     FROM sessions WHERE status IN ('submitted', 'escalated')
-    ORDER BY submitted_at DESC LIMIT 200`).all();
+    ORDER BY submitted_at DESC LIMIT 200`);
   res.json(rows.map(({ summary_json, ...r }) => ({
     ...r,
     mainSymptoms: summary_json ? JSON.parse(summary_json).main_symptoms : [],
   })));
-});
+}));
 
-function loadSubmission(req, res, next) {
-  const s = getSession(req.params.id);
+const loadSubmission = ah(async (req, res, next) => {
+  const s = await getSession(req.params.id);
   if (!s || !['submitted', 'escalated'].includes(s.status)) return res.status(404).json({ error: 'Submission not found.' });
   req.submission = s;
   next();
-}
+});
 
-doctorRouter.get('/submissions/:id', loadSubmission, (req, res) => {
+doctorRouter.get('/submissions/:id', loadSubmission, ah(async (req, res) => {
   const s = req.submission;
-  const consultations = db.prepare(
-    'SELECT id, phase, complexity, started_at, ended_at, duration_sec FROM consultations WHERE session_id = ? ORDER BY id',
-  ).all(s.id);
+  const [consultations, responses] = await Promise.all([
+    query('SELECT id, phase, complexity, started_at, ended_at, duration_sec FROM consultations WHERE session_id = $1 ORDER BY id', [s.id]),
+    getResponses(s.id),
+  ]);
   res.json({
     id: s.id,
     code: s.code,
@@ -70,7 +72,7 @@ doctorRouter.get('/submissions/:id', loadSubmission, (req, res) => {
     urgentReason: s.urgent_reason,
     summary: s.summary_json ? JSON.parse(s.summary_json) : null,
     summarySource: s.summary_source,
-    responses: getResponses(s.id).map((r) => ({
+    responses: responses.map((r) => ({
       questionId: r.question_id,
       question: r.question_text,
       category: r.category,
@@ -80,43 +82,44 @@ doctorRouter.get('/submissions/:id', loadSubmission, (req, res) => {
     })),
     consultations,
   });
-});
+}));
 
-doctorRouter.patch('/submissions/:id', loadSubmission, (req, res) => {
+doctorRouter.patch('/submissions/:id', loadSubmission, ah(async (req, res) => {
   const reviewStatus = req.body?.reviewStatus;
   if (!['new', 'reviewed'].includes(reviewStatus)) return res.status(400).json({ error: 'Invalid status.' });
-  db.prepare('UPDATE sessions SET review_status = ? WHERE id = ?').run(reviewStatus, req.submission.id);
+  await query('UPDATE sessions SET review_status = $1 WHERE id = $2', [reviewStatus, req.submission.id]);
   res.json({ reviewStatus });
-});
+}));
 
 // ------------------------------------------------------- consultation timing
 
 const PHASES = ['baseline', 'assisted'];
 const COMPLEXITIES = ['low', 'medium', 'high'];
 
-doctorRouter.post('/consultations/start', (req, res) => {
+doctorRouter.post('/consultations/start', ah(async (req, res) => {
   const { sessionId, complexity } = req.body || {};
   if (!COMPLEXITIES.includes(complexity)) return res.status(400).json({ error: 'Choose a complexity.' });
-  const s = sessionId ? getSession(sessionId) : null;
+  const s = sessionId ? await getSession(sessionId) : null;
   if (sessionId && !s) return res.status(404).json({ error: 'Submission not found.' });
-  const info = db.prepare(
-    "INSERT INTO consultations (doctor_id, session_id, phase, complexity, started_at) VALUES (?, ?, 'assisted', ?, ?)",
-  ).run(req.doctorId, s?.id ?? null, complexity, nowIso());
-  res.status(201).json({ id: info.lastInsertRowid });
-});
+  const row = await one(
+    "INSERT INTO consultations (doctor_id, session_id, phase, complexity, started_at) VALUES ($1, $2, 'assisted', $3, $4) RETURNING id",
+    [req.doctorId, s?.id ?? null, complexity, nowIso()],
+  );
+  res.status(201).json({ id: row.id });
+}));
 
-doctorRouter.post('/consultations/:id/end', (req, res) => {
-  const c = db.prepare('SELECT * FROM consultations WHERE id = ? AND doctor_id = ?').get(req.params.id, req.doctorId);
+doctorRouter.post('/consultations/:id/end', ah(async (req, res) => {
+  const c = await one('SELECT * FROM consultations WHERE id = $1 AND doctor_id = $2', [Number(req.params.id) || 0, req.doctorId]);
   if (!c) return res.status(404).json({ error: 'Consultation not found.' });
   if (c.ended_at) return res.status(409).json({ error: 'Already ended.' });
   const ended = nowIso();
   const duration = Math.max(1, Math.round((Date.parse(ended) - Date.parse(c.started_at)) / 1000));
-  db.prepare('UPDATE consultations SET ended_at = ?, duration_sec = ? WHERE id = ?').run(ended, duration, c.id);
+  await query('UPDATE consultations SET ended_at = $1, duration_sec = $2 WHERE id = $3', [ended, duration, c.id]);
   res.json({ id: c.id, durationSec: duration });
-});
+}));
 
 // Manual entry, mainly for baseline consultations from before the assistant was introduced.
-doctorRouter.post('/consultations', (req, res) => {
+doctorRouter.post('/consultations', ah(async (req, res) => {
   const { phase, complexity, startedAt, durationMinutes } = req.body || {};
   const minutes = Number(durationMinutes);
   const start = Date.parse(startedAt);
@@ -125,15 +128,19 @@ doctorRouter.post('/consultations', (req, res) => {
   }
   const startedIso = new Date(start).toISOString();
   const endedIso = new Date(start + minutes * 60000).toISOString();
-  const info = db.prepare(`
+  const row = await one(`
     INSERT INTO consultations (doctor_id, phase, complexity, started_at, ended_at, duration_sec)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(req.doctorId, phase, complexity, startedIso, endedIso, Math.round(minutes * 60));
-  res.status(201).json({ id: info.lastInsertRowid });
-});
+    VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`, [req.doctorId, phase, complexity, startedIso, endedIso, Math.round(minutes * 60)]);
+  res.status(201).json({ id: row.id });
+}));
 
-doctorRouter.get('/metrics', (req, res) => {
-  const feedback = db.prepare(`
-    SELECT f.liked, f.comment, f.created_at, s.code FROM feedback f JOIN sessions s ON s.id = f.session_id
-    WHERE f.comment IS NOT NULL ORDER BY f.created_at DESC LIMIT 50`).all();
-  res.json({ patient: patientMetrics(), doctor: doctorMetrics(), feedback });
-});
+doctorRouter.get('/metrics', ah(async (req, res) => {
+  const [patient, doctor, feedback] = await Promise.all([
+    patientMetrics(),
+    doctorMetrics(),
+    query(`
+      SELECT f.liked, f.comment, f.created_at, s.code FROM feedback f JOIN sessions s ON s.id = f.session_id
+      WHERE f.comment IS NOT NULL ORDER BY f.created_at DESC LIMIT 50`),
+  ]);
+  res.json({ patient, doctor, feedback });
+}));

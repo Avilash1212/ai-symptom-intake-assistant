@@ -14,6 +14,7 @@ const RED_FLAGS = [
   { reason: 'Sudden severe headache', patterns: [/worst headache/, /thunderclap/, /sudden (and )?severe headache/] },
   { reason: 'Confusion or unresponsiveness', patterns: [/(sudden|severe) confusion/, /confused and/, /unresponsive/, /can'?t (stay awake|wake up)/] },
   { reason: 'Serious injury or poisoning', patterns: [/overdose/, /poison/, /swallowed (bleach|chemical|pills)/, /head injury/, /hit (my|his|her) head/, /broken bone.*(sticking|through)/] },
+  { reason: 'Loss of bladder or bowel control', patterns: [/loss of (bladder|bowel) control/, /(can'?t|cannot|unable to) control (my )?(bladder|bowels?|urine)/, /incontinen/, /numb(ness)? (in|around) (my )?(groin|genitals|buttocks|inner thighs)/] },
   { reason: 'Severe abdominal pain', patterns: [/(severe|unbearable|excruciating) (abdominal|stomach|belly) pain/] },
   { reason: 'Stiff neck with fever or rash', patterns: [/stiff neck.*(fever|rash)/, /(fever|rash).*stiff neck/, /rash.*(doesn'?t|does not|won'?t) fade/] },
 ];

@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { db, nowIso } from './db.js';
+import { nowIso, one, query } from './db.js';
 import { STANDARD_QUESTIONS } from './questions.js';
 
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -9,21 +9,22 @@ function newCode() {
   return 'P-' + [...bytes].map((b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join('');
 }
 
-export function createSession() {
+export async function createSession() {
   const id = crypto.randomUUID();
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      db.prepare('INSERT INTO sessions (id, code) VALUES (?, ?)').run(id, newCode());
+      const now = nowIso();
+      await query('INSERT INTO sessions (id, code, created_at, updated_at) VALUES ($1, $2, $3, $4)', [id, newCode(), now, now]);
       return id;
     } catch (err) {
-      if (!String(err.message).includes('UNIQUE')) throw err;
+      if (err.code !== '23505') throw err; // unique violation: retry with a new code
     }
   }
   throw new Error('Could not allocate a session code');
 }
 
 export function getSession(id) {
-  return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id);
+  return one('SELECT * FROM sessions WHERE id = $1', [id]);
 }
 
 export function getFollowups(session) {
@@ -43,7 +44,7 @@ export function allQuestions(session) {
 }
 
 export function getResponses(sessionId) {
-  return db.prepare('SELECT * FROM responses WHERE session_id = ? ORDER BY position').all(sessionId);
+  return query('SELECT * FROM responses WHERE session_id = $1 ORDER BY position', [sessionId]);
 }
 
 /** Analytics key for a question: standard id, or followup_N by position. */
@@ -52,24 +53,24 @@ export function questionKey(session, questionId) {
   return idx >= 0 ? `followup_${idx + 1}` : questionId;
 }
 
-export function logEvent(sessionId, type, questionKeyValue = null) {
-  db.prepare('INSERT INTO events (session_id, type, question_key, created_at) VALUES (?, ?, ?, ?)').run(
+export async function logEvent(sessionId, type, questionKeyValue = null) {
+  await query('INSERT INTO events (session_id, type, question_key, created_at) VALUES ($1, $2, $3, $4)', [
     sessionId,
     type,
     questionKeyValue,
     nowIso(),
-  );
+  ]);
 }
 
-export function touch(sessionId, fields = {}) {
-  const keys = Object.keys(fields);
-  const sets = keys.map((k) => `${k} = @${k}`).concat('updated_at = @updated_at').join(', ');
-  db.prepare(`UPDATE sessions SET ${sets} WHERE id = @id`).run({ ...fields, updated_at: nowIso(), id: sessionId });
+export async function touch(sessionId, fields = {}) {
+  const entries = Object.entries({ ...fields, updated_at: nowIso() });
+  const sets = entries.map(([k], i) => `${k} = $${i + 2}`).join(', ');
+  await query(`UPDATE sessions SET ${sets} WHERE id = $1`, [sessionId, ...entries.map(([, v]) => v)]);
 }
 
-export function escalate(sessionId, reason) {
-  const s = getSession(sessionId);
+export async function escalate(sessionId, reason) {
+  const s = await getSession(sessionId);
   if (s.status === 'escalated') return;
-  touch(sessionId, { status: 'escalated', urgent_reason: reason, submitted_at: nowIso() });
-  logEvent(sessionId, 'urgent_escalated');
+  await touch(sessionId, { status: 'escalated', urgent_reason: reason, submitted_at: nowIso() });
+  await logEvent(sessionId, 'urgent_escalated');
 }

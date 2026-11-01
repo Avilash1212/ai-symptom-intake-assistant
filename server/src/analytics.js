@@ -1,41 +1,43 @@
-import { db } from './db.js';
+import { one, query } from './db.js';
 import { STANDARD_QUESTIONS } from './questions.js';
 
 const pct = (num, den) => (den ? Math.round((num / den) * 1000) / 10 : null);
 
-export function patientMetrics() {
-  const count = (sql, ...args) => db.prepare(sql).get(...args).n;
+export async function patientMetrics() {
+  const count = async (sql) => (await one(sql)).n;
 
-  const started = count("SELECT COUNT(*) n FROM sessions");
-  const completed = count("SELECT COUNT(*) n FROM sessions WHERE status = 'submitted'");
-  const escalated = count("SELECT COUNT(*) n FROM sessions WHERE status = 'escalated'");
-  const summariesGenerated = count("SELECT COUNT(DISTINCT session_id) n FROM events WHERE type = 'summary_generated'");
-  const summariesConfirmed = count("SELECT COUNT(DISTINCT session_id) n FROM events WHERE type = 'summary_confirmed'");
-  const feedbackCount = count('SELECT COUNT(*) n FROM feedback');
-  const likes = count('SELECT COUNT(*) n FROM feedback WHERE liked = 1');
-  const answered = count("SELECT COUNT(*) n FROM responses WHERE answer_kind != 'skipped'");
+  const [started, completed, escalated, summariesGenerated, summariesConfirmed, feedbackCount, likes, answered] = await Promise.all([
+    count('SELECT COUNT(*)::int n FROM sessions'),
+    count("SELECT COUNT(*)::int n FROM sessions WHERE status = 'submitted'"),
+    count("SELECT COUNT(*)::int n FROM sessions WHERE status = 'escalated'"),
+    count("SELECT COUNT(DISTINCT session_id)::int n FROM events WHERE type = 'summary_generated'"),
+    count("SELECT COUNT(DISTINCT session_id)::int n FROM events WHERE type = 'summary_confirmed'"),
+    count('SELECT COUNT(*)::int n FROM feedback'),
+    count('SELECT COUNT(*)::int n FROM feedback WHERE liked = 1'),
+    count("SELECT COUNT(*)::int n FROM responses WHERE answer_kind != 'skipped'"),
+  ]);
 
+  const byType = (type) => query(
+    'SELECT question_key k, COUNT(DISTINCT session_id)::int n FROM events WHERE type = $1 GROUP BY question_key',
+    [type],
+  );
   // Drop-off: for sessions that were abandoned (not submitted, not escalated),
   // the last question the patient viewed is where they left.
-  const viewed = db.prepare(`
-    SELECT question_key k, COUNT(DISTINCT session_id) n FROM events
-    WHERE type = 'question_viewed' GROUP BY question_key`).all();
-  const answeredBy = db.prepare(`
-    SELECT question_key k, COUNT(DISTINCT session_id) n FROM events
-    WHERE type = 'question_answered' GROUP BY question_key`).all();
-  const skippedBy = db.prepare(`
-    SELECT question_key k, COUNT(DISTINCT session_id) n FROM events
-    WHERE type = 'question_skipped' GROUP BY question_key`).all();
-  const dropped = db.prepare(`
-    SELECT e.question_key k, COUNT(*) n FROM events e
-    JOIN sessions s ON s.id = e.session_id
-    WHERE s.status IN ('in_progress', 'summary_ready')
-      AND e.id = (SELECT MAX(id) FROM events e2 WHERE e2.session_id = e.session_id AND e2.type = 'question_viewed')
-      AND NOT EXISTS (SELECT 1 FROM events e3 WHERE e3.session_id = e.session_id AND e3.type = 'summary_generated')
-    GROUP BY e.question_key`).all();
-  const droppedAtReview = count(`
-    SELECT COUNT(*) n FROM sessions s WHERE s.status IN ('in_progress', 'summary_ready')
-      AND EXISTS (SELECT 1 FROM events e WHERE e.session_id = s.id AND e.type = 'summary_generated')`);
+  const [viewed, answeredBy, skippedBy, dropped, reviewRow] = await Promise.all([
+    byType('question_viewed'),
+    byType('question_answered'),
+    byType('question_skipped'),
+    query(`
+      SELECT e.question_key k, COUNT(*)::int n FROM events e
+      JOIN sessions s ON s.id = e.session_id
+      WHERE s.status IN ('in_progress', 'summary_ready')
+        AND e.id = (SELECT MAX(id) FROM events e2 WHERE e2.session_id = e.session_id AND e2.type = 'question_viewed')
+        AND NOT EXISTS (SELECT 1 FROM events e3 WHERE e3.session_id = e.session_id AND e3.type = 'summary_generated')
+      GROUP BY e.question_key`),
+    one(`
+      SELECT COUNT(*)::int n FROM sessions s WHERE s.status IN ('in_progress', 'summary_ready')
+        AND EXISTS (SELECT 1 FROM events e WHERE e.session_id = s.id AND e.type = 'summary_generated')`),
+  ]);
 
   const toMap = (rows) => Object.fromEntries(rows.map((r) => [r.k, r.n]));
   const [v, a, sk, d] = [toMap(viewed), toMap(answeredBy), toMap(skippedBy), toMap(dropped)];
@@ -63,7 +65,7 @@ export function patientMetrics() {
     avgQuestionsAnswered: started ? Math.round((answered / started) * 10) / 10 : null,
     summaryGenerationRate: pct(summariesGenerated, started),
     completionRate: pct(completed, started),
-    droppedAtReview,
+    droppedAtReview: reviewRow.n,
     questionFunnel,
   };
 }
@@ -73,10 +75,10 @@ export function patientMetrics() {
  * stratified by doctor-rated complexity so a shift in case mix is visible
  * rather than hidden in an average.
  */
-export function doctorMetrics() {
-  const rows = db.prepare(`
+export async function doctorMetrics() {
+  const rows = await query(`
     SELECT phase, complexity, started_at, duration_sec FROM consultations
-    WHERE duration_sec IS NOT NULL AND duration_sec > 0`).all();
+    WHERE duration_sec IS NOT NULL AND duration_sec > 0`);
 
   const phases = {};
   for (const phase of ['baseline', 'assisted']) {

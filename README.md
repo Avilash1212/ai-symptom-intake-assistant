@@ -44,6 +44,57 @@ npm start
 
 The demo doctor login is set by `DOCTOR_EMAIL` / `DOCTOR_PASSWORD` in `.env`. Change these before showing the app to anyone, then run `npm run seed` again.
 
+Locally, with `DATABASE_URL` empty, data is kept in an embedded Postgres database in `server/data/pglite`, so no database setup is needed. To develop against Supabase instead, put its connection string in `DATABASE_URL`.
+
+## Deploying to Vercel (with Supabase)
+
+The whole repo is deployed as **one Vercel project from the repository root**. Don't pick `client` or `server` as the root directory. `vercel.json` already sets everything up:
+- The React app in `client/` is built and served as static files.
+- The Express API in `server/` runs as a single serverless function (`api/index.js`) that handles every `/api/...` request.
+
+**1. Create the database (Supabase, free plan)**
+1. Sign in at https://supabase.com and create a new project. Save the database password it asks you to set.
+2. Open the project, click **Connect**, and copy the **Transaction pooler** connection string (port `6543`). Replace `[YOUR-PASSWORD]` in it with your database password.
+
+The app creates its tables automatically on first use.
+
+**2. Import the project in Vercel**
+1. In Vercel: **Add New… → Project**, then import your GitHub repository.
+2. Leave **Root Directory** as `./` (the repository root) and **Framework Preset** as **Other**. The build and output settings come from `vercel.json`, so don't change them.
+3. Under **Environment Variables**, add:
+
+| Name | Value |
+|---|---|
+| `DATABASE_URL` | the Supabase Transaction pooler connection string |
+| `JWT_SECRET` | a long random string (at least 32 characters) |
+| `GEMINI_API_KEY` | your Gemini key |
+| `GEMINI_MODEL` | `gemini-3.6-flash` |
+| `DOCTOR_NAME` | e.g. `Dr. Demo` |
+| `DOCTOR_EMAIL` | the doctor's login email |
+| `DOCTOR_PASSWORD` | a strong password (at least 10 characters) |
+
+4. Click **Deploy**.
+
+On the first request, the doctor account is created from `DOCTOR_EMAIL` / `DOCTOR_PASSWORD`. Sign in at `https://<your-app>.vercel.app/doctor/login`. You can check that the API is running at `/api/health`.
+
+If you add Supabase through Vercel's **Storage** tab instead, Vercel sets `POSTGRES_URL` for you. The app accepts that too, so `DATABASE_URL` isn't needed in that case.
+
+**Optional: demo data on the live database.** Put the Supabase connection string in your local `.env` as `DATABASE_URL`, then run:
+
+```bash
+npm run seed:demo
+```
+
+**To change the doctor password later:** update `DOCTOR_PASSWORD` in your local `.env` (with `DATABASE_URL` pointing at Supabase), then run:
+
+```bash
+npm run seed
+```
+
+**Notes for serverless hosting:**
+- Each request may run on a different instance, so the login rate limit is counted per instance.
+- Gemini calls can take up to about 15 seconds. The function time limit is set to 60 seconds in `vercel.json`.
+
 ### AI mode vs. rule-based mode
 
 - **With `GEMINI_API_KEY` set**, Google Gemini generates the follow-up questions and the summary as structured JSON. The default model is `gemini-3.6-flash`, which is on the free tier and answered in about 5 seconds in testing. You can change it with `GEMINI_MODEL`, for example to `gemini-3.5-flash-lite` for faster responses. In testing on a free key, `gemini-3.8-flash` did not respond at all, so it is not the default. Rate-limit (429) and temporary errors are retried once.
@@ -74,7 +125,7 @@ Every question except the first offers **Not applicable**, **Don't know / Not su
 - Passwords are hashed with bcrypt. Login is rate-limited and returns the same response time whether or not the email exists.
 - Other protections: Helmet security headers and a CSP, `Cache-Control: no-store` on all API responses, JSON-only requests that change data (blocks cross-site form posts), and a request size limit.
 - No names, phone numbers or dates of birth are collected. Patients are identified by a random code such as `P-7K3Q9X`.
-- Deploy behind HTTPS with `NODE_ENV=production` so cookies are marked `Secure`.
+- On Vercel, HTTPS is automatic and cookies are marked `Secure`. For other hosts, deploy behind HTTPS with `NODE_ENV=production`.
 - Voice input uses the browser's Web Speech API (Chrome or Edge). In Chrome, audio is processed by the browser vendor's speech service. Review this before any real-world use. Patients can always type instead.
 
 ## Product analytics
@@ -95,7 +146,11 @@ npm run metrics -- add-consultation --phase baseline --complexity low --start 20
 ## Project layout
 
 ```
+api/index.js       Vercel serverless entry (wraps the Express app)
+vercel.json        Vercel build, function and routing config
 server/            Express API (Node, ESM)
+  src/app.js         Express app; src/index.js starts it locally
+  src/db.js          Postgres access (Supabase, or embedded PGlite locally)
   src/ai.js          Gemini calls + rule-based fallback
   src/safety.js      Emergency red-flag screen
   src/questions.js   Standard questions and limits
@@ -109,7 +164,7 @@ client/            React (Vite) app
   src/doctor/        Login, dashboard, patient view, metrics
 ```
 
-Data is stored in SQLite at `server/data/intake.db` (git-ignored). To reset it, delete the folder and run `npm run seed:demo`.
+Local data is stored in `server/data/pglite` (git-ignored). To reset it, delete the `server/data` folder and run `npm run seed:demo`.
 
 ## Not in scope for the MVP
 

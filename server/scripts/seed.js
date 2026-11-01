@@ -1,8 +1,10 @@
 // Creates (or updates) the doctor account from DOCTOR_EMAIL / DOCTOR_PASSWORD.
 // With --demo, also inserts SYNTHETIC intake submissions and consultation
 // timings so the dashboard can be demonstrated. No real patient data.
+// Uses DATABASE_URL from .env when set (e.g. your Supabase database),
+// otherwise the local development database.
 import bcrypt from 'bcryptjs';
-import { db, nowIso } from '../src/db.js';
+import { closeDb, nowIso, one, query, ready } from '../src/db.js';
 import { createSession, logEvent, touch } from '../src/sessions.js';
 import { STANDARD_QUESTIONS } from '../src/questions.js';
 
@@ -15,12 +17,13 @@ if (!email || password.length < 10) {
   process.exit(1);
 }
 
+await ready();
 const hash = bcrypt.hashSync(password, 12);
-db.prepare(`
-  INSERT INTO doctors (email, name, password_hash) VALUES (?, ?, ?)
+await query(`
+  INSERT INTO doctors (email, name, password_hash, created_at) VALUES ($1, $2, $3, $4)
   ON CONFLICT (email) DO UPDATE SET name = excluded.name, password_hash = excluded.password_hash
-`).run(email, name, hash);
-const doctorId = db.prepare('SELECT id FROM doctors WHERE email = ?').get(email).id;
+`, [email, name, hash, nowIso()]);
+const doctorId = (await one('SELECT id FROM doctors WHERE email = $1', [email])).id;
 console.log(`Doctor account ready: ${email}`);
 
 if (process.argv.includes('--demo')) {
@@ -72,37 +75,37 @@ if (process.argv.includes('--demo')) {
   ];
 
   const kindOf = (v) => (v === '__unsure' ? 'unsure' : v === '__na' ? 'not_applicable' : v === '__skip' ? 'skipped' : 'answer');
-  const insert = db.prepare(`
-    INSERT INTO responses (session_id, question_id, question_text, category, position, answer_kind, answer_value, input_method)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const insert = (...params) => query(`
+    INSERT INTO responses (session_id, question_id, question_text, category, position, answer_kind, answer_value, input_method, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [...params, nowIso()]);
 
-  demo.forEach((d, idx) => {
-    const id = createSession();
+  for (const [idx, d] of demo.entries()) {
+    const id = await createSession();
     const submittedAt = new Date(Date.now() - (demo.length - idx) * 23 * 60000).toISOString();
-    logEvent(id, 'intake_started');
+    await logEvent(id, 'intake_started');
     const responses = [];
-    STANDARD_QUESTIONS.forEach((sq, i) => {
-      if (!(sq.id in d.answers)) return;
+    for (const [i, sq] of STANDARD_QUESTIONS.entries()) {
+      if (!(sq.id in d.answers)) continue;
       const v = d.answers[sq.id];
       const kind = kindOf(v);
-      insert.run(id, sq.id, q[sq.id], 'standard', i, kind, kind === 'answer' ? v : null, sq.id === 'symptoms' ? 'text' : 'options');
+      await insert(id, sq.id, q[sq.id], 'standard', i, kind, kind === 'answer' ? v : null, sq.id === 'symptoms' ? 'text' : 'options');
       responses.push({ question: q[sq.id], kind });
-      logEvent(id, 'question_viewed', sq.id);
-      logEvent(id, kind === 'skipped' ? 'question_skipped' : 'question_answered', sq.id);
-    });
+      await logEvent(id, 'question_viewed', sq.id);
+      await logEvent(id, kind === 'skipped' ? 'question_skipped' : 'question_answered', sq.id);
+    }
     const followups = (d.followups || []).map(([text, , options], i) => ({ id: `fu_1_${i + 1}`, text, options, multiSelect: options.length > 3, source: 'rules' }));
-    (d.followups || []).forEach(([text, v], i) => {
+    for (const [i, [text, v]] of (d.followups || []).entries()) {
       const kind = kindOf(v);
-      insert.run(id, `fu_1_${i + 1}`, text, 'followup', 100 + i, kind, kind === 'answer' ? v : null, 'options');
+      await insert(id, `fu_1_${i + 1}`, text, 'followup', 100 + i, kind, kind === 'answer' ? v : null, 'options');
       responses.push({ question: text, kind, value: v, followup: true });
-      logEvent(id, 'question_viewed', `followup_${i + 1}`);
-      logEvent(id, kind === 'skipped' ? 'question_skipped' : 'question_answered', `followup_${i + 1}`);
-    });
+      await logEvent(id, 'question_viewed', `followup_${i + 1}`);
+      await logEvent(id, kind === 'skipped' ? 'question_skipped' : 'question_answered', `followup_${i + 1}`);
+    }
 
     if (d.status === 'escalated') {
-      touch(id, { status: 'escalated', urgent_reason: d.urgent, submitted_at: submittedAt });
-      logEvent(id, 'urgent_escalated');
-      return;
+      await touch(id, { status: 'escalated', urgent_reason: d.urgent, submitted_at: submittedAt });
+      await logEvent(id, 'urgent_escalated');
+      continue;
     }
     const a = d.answers;
     const ans = (k) => (kindOf(a[k]) === 'answer' ? a[k] : null);
@@ -117,21 +120,21 @@ if (process.argv.includes('--demo')) {
       not_provided: responses.filter((r) => r.kind === 'unsure' || r.kind === 'skipped').map((r) => ({ question: r.question, reason: r.kind })),
       not_applicable: responses.filter((r) => r.kind === 'not_applicable').map((r) => r.question),
     };
-    touch(id, {
+    await touch(id, {
       status: 'submitted', submitted_at: submittedAt, summary_json: JSON.stringify(summary), summary_source: 'rules',
       followups_json: JSON.stringify(followups), followup_rounds: 1, followups_done: 1,
     });
-    logEvent(id, 'summary_generated');
-    logEvent(id, 'summary_confirmed');
+    await logEvent(id, 'summary_generated');
+    await logEvent(id, 'summary_confirmed');
     if (idx === 0) {
-      db.prepare('INSERT INTO feedback (session_id, liked, comment, created_at) VALUES (?, 1, ?, ?)').run(id, 'Quick and easy to use.', nowIso());
-      logEvent(id, 'feedback_submitted');
+      await query('INSERT INTO feedback (session_id, liked, comment, created_at) VALUES ($1, 1, $2, $3)', [id, 'Quick and easy to use.', nowIso()]);
+      await logEvent(id, 'feedback_submitted');
     }
-  });
+  }
 
   // Synthetic consultation timings: two baseline days, two assisted days.
-  const consult = db.prepare(`
-    INSERT INTO consultations (doctor_id, phase, complexity, started_at, ended_at, duration_sec) VALUES (?, ?, ?, ?, ?, ?)`);
+  const consult = (...params) => query(`
+    INSERT INTO consultations (doctor_id, phase, complexity, started_at, ended_at, duration_sec) VALUES ($1, $2, $3, $4, $5, $6)`, params);
   const day = (offset) => {
     const d = new Date();
     d.setDate(d.getDate() - offset);
@@ -147,9 +150,11 @@ if (process.argv.includes('--demo')) {
   for (const [phase, offset, list] of plan) {
     let t = day(offset);
     for (const [complexity, minutes] of list) {
-      consult.run(doctorId, phase, complexity, new Date(t).toISOString(), new Date(t + minutes * 60000).toISOString(), minutes * 60);
+      await consult(doctorId, phase, complexity, new Date(t).toISOString(), new Date(t + minutes * 60000).toISOString(), minutes * 60);
       t += (minutes + 3) * 60000;
     }
   }
   console.log(`Inserted ${demo.length} synthetic submissions and sample consultation timings.`);
 }
+
+await closeDb();

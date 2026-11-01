@@ -7,7 +7,7 @@
 //       --start 2026-10-01T10:00 --minutes 12
 //                                       record a consultation timing manually
 //                                       (e.g. baseline data from before the assistant)
-import { db } from '../src/db.js';
+import { closeDb, one, query, ready } from '../src/db.js';
 import { doctorMetrics, patientMetrics } from '../src/analytics.js';
 
 const args = process.argv.slice(2);
@@ -16,7 +16,7 @@ const flag = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
-function addConsultation() {
+async function addConsultation() {
   const phase = flag('phase');
   const complexity = flag('complexity');
   const start = Date.parse(flag('start') ?? '');
@@ -26,17 +26,17 @@ function addConsultation() {
     console.error('Usage: add-consultation --phase baseline|assisted --complexity low|medium|high --start <date-time> --minutes <1-240>');
     process.exit(1);
   }
-  const doctor = db.prepare('SELECT id FROM doctors ORDER BY id LIMIT 1').get();
+  const doctor = await one('SELECT id FROM doctors ORDER BY id LIMIT 1');
   if (!doctor) {
     console.error('No doctor account exists. Run `npm run seed` first.');
     process.exit(1);
   }
-  db.prepare(`
+  await query(`
     INSERT INTO consultations (doctor_id, phase, complexity, started_at, ended_at, duration_sec)
-    VALUES (?, ?, ?, ?, ?, ?)`).run(
+    VALUES ($1, $2, $3, $4, $5, $6)`, [
     doctor.id, phase, complexity,
     new Date(start).toISOString(), new Date(start + minutes * 60000).toISOString(), Math.round(minutes * 60),
-  );
+  ]);
   console.log(`Recorded ${phase} consultation: ${complexity} complexity, ${minutes} min.`);
 }
 
@@ -46,12 +46,12 @@ function change(before, after) {
   return `${pct > 0 ? '+' : ''}${pct}%`;
 }
 
-function report() {
-  const patient = patientMetrics();
-  const doctor = doctorMetrics();
-  const feedback = db.prepare(`
+async function report() {
+  const patient = await patientMetrics();
+  const doctor = await doctorMetrics();
+  const feedback = await query(`
     SELECT s.code, f.liked, f.comment, f.created_at FROM feedback f JOIN sessions s ON s.id = f.session_id
-    WHERE f.comment IS NOT NULL ORDER BY f.created_at DESC LIMIT 20`).all();
+    WHERE f.comment IS NOT NULL ORDER BY f.created_at DESC LIMIT 20`);
 
   if (args.includes('--json')) {
     console.log(JSON.stringify({ patient, doctor, feedback }, null, 2));
@@ -100,5 +100,7 @@ function report() {
   console.log('');
 }
 
-if (args[0] === 'add-consultation') addConsultation();
-else report();
+await ready();
+if (args[0] === 'add-consultation') await addConsultation();
+else await report();
+await closeDb();
