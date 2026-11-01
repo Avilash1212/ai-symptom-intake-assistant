@@ -1,0 +1,17 @@
+{
+  "name": "ai-symptom-intake-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI Symptom Intake Assistant - MVP prototype for small clinics",
+  "scripts": {
+    "install:all": "npm --prefix server install && npm --prefix client install",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "start": "npm --prefix server start",
+    "seed": "npm --prefix server run seed",
+    "seed:demo": "npm --prefix server run seed:demo",
+    "metrics": "npm --prefix server run metrics --",
+    "test": "npm --prefix server test"
+  }
+}
