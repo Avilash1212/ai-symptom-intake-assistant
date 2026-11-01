@@ -1,10 +1,141 @@
-# AI Symptom Intake Assistant – MVP
+# AI Symptom Intake Assistant
 
-A web app for small clinics. Patients describe their symptoms (typed or spoken) and answer a short set of standard and AI-generated follow-up questions before their consultation. The doctor signs in and reads a structured summary of what the patient reported.
+An AI-powered symptom intake assistant designed to help patients communicate their symptoms and help doctors prepare for consultations through structured, AI-generated summaries.
 
-> **Early-stage prototype.** This is not a clinically validated medical device and must not be used for unsupervised clinical deployment. It does not diagnose, prescribe or recommend treatment. Use only synthetic data.
+## Overview
 
-## Quick start
+Collecting basic patient information can take up a significant portion of a doctor's consultation time. Patients often need to explain their symptoms, describe their duration and severity, and answer several routine questions before the actual consultation begins.
+
+The AI Symptom Intake Assistant aims to streamline this process by collecting symptom information before the doctor consultation.
+
+Patients interact with an AI assistant that asks standard questions and generates relevant follow-up questions based on their responses. Once the intake is complete, the application generates a structured symptom summary for the doctor to review.
+
+**The product focuses on improving consultation preparation, not replacing medical professionals.**
+
+## Problem Statement
+
+- Doctors spend valuable consultation time collecting basic symptom information.
+- Patients may forget or struggle to communicate important details about their symptoms.
+- Information provided during consultations may not always be structured or easy to review.
+
+## Solution
+
+The application provides a structured AI-powered symptom intake workflow.
+
+Patients describe their symptoms through text or voice, answer relevant questions, review the generated summary, and submit it for doctor review.
+
+Doctors can log in to a dedicated dashboard and access submitted patient summaries before consultations.
+
+## Key Features
+
+### Patient Interface
+- Separate patient entry point.
+- Symptom description through text and voice input.
+- Standard symptom-intake questions.
+- AI-generated dynamic follow-up questions.
+- Options such as "Not Applicable" and "Don't Know / Not Sure".
+- AI-generated structured symptom summaries.
+- Patient review and confirmation before submission.
+- Like button and optional written feedback.
+
+### Doctor Interface
+- Dedicated doctor login.
+- Secure doctor dashboard.
+- List of submitted patient intakes.
+- Individual patient symptom summaries.
+- Access to original patient responses for clarification.
+
+### AI Capabilities
+- Context-aware follow-up question generation.
+- Structured symptom information extraction.
+- Summary generation based on patient responses.
+- Avoidance of unsupported assumptions and invented information.
+- Basic urgent-symptom escalation workflow.
+
+## Application Workflow
+
+1. Patient or doctor opens the application.
+2. User selects their role.
+3. Patients enter the symptom intake workflow.
+4. AI asks standard questions and relevant follow-up questions.
+5. Patient reviews and confirms the generated summary.
+6. The submission becomes available on the doctor's dashboard.
+7. Doctor reviews the summary before consultation.
+
+## Product Metrics
+
+The product is designed to measure improvements across two user groups.
+
+**Patient-side metrics**
+- Intake start rate.
+- Question completion rate.
+- Drop-off at each question.
+- Summary generation rate.
+- Summary submission rate.
+- Patient feedback.
+
+**Doctor-side metrics**
+- Patients consulted per hour.
+- Total patients consulted per day.
+- Average consultation time for similar patient types.
+
+These metrics can help evaluate whether the product improves workflow efficiency after introduction into a clinic.
+
+## Technology Stack
+
+- Frontend: React 18 with Vite and React Router
+- Backend: Node.js with Express, run as a Vercel serverless function
+- Database: PostgreSQL on Supabase (embedded PGlite for local development)
+- AI Model/API: Google Gemini API (`gemini-3.6-flash`) with a rule-based fallback
+- Voice Input: Browser Web Speech API (Chrome / Edge)
+- Authentication: bcrypt-hashed passwords, signed JWT in httpOnly cookies, server-side role checks
+- Deployment: Vercel
+
+## Current Scope
+
+This project is an early-stage MVP focused on the core symptom intake and doctor review workflow.
+
+The following are outside the current scope:
+
+- Disease diagnosis.
+- Medication and treatment recommendations.
+- Prescription generation.
+- Historical patient records.
+- Appointment scheduling.
+- Billing and hospital management.
+- Multi-language support.
+- Advanced clinical analytics.
+
+## Safety and Disclaimer
+
+This application is an experimental prototype and is not a clinically validated medical device.
+
+It does not diagnose medical conditions or recommend treatments. AI-generated summaries are intended to organise information provided by patients for review by qualified healthcare professionals.
+
+Potential emergency symptoms should trigger appropriate urgent-care guidance. The prototype must undergo clinical, privacy and security review before real-world patient deployment.
+
+## Future Improvements
+
+Potential areas for future development include:
+
+- Doctor feedback and clinical review workflows.
+- Additional language support.
+- Improved speech recognition.
+- Formal AI evaluation and accuracy testing.
+- Advanced clinic analytics.
+- Integration with existing clinic systems.
+
+## Project Status
+
+MVP / Prototype
+
+Built as an AI Product Management portfolio project to explore how AI can improve patient intake and doctor consultation preparation.
+
+---
+
+# Developer Guide
+
+## Running locally
 
 Requirements: Node.js 20+.
 
@@ -95,7 +226,7 @@ npm run seed
 - Each request may run on a different instance, so the login rate limit is counted per instance.
 - Gemini calls can take up to about 15 seconds. The function time limit is set to 60 seconds in `vercel.json`.
 
-### AI mode vs. rule-based mode
+## AI mode vs. rule-based mode
 
 - **With `GEMINI_API_KEY` set**, Google Gemini generates the follow-up questions and the summary as structured JSON. The default model is `gemini-3.6-flash`, which is on the free tier and answered in about 5 seconds in testing. You can change it with `GEMINI_MODEL`, for example to `gemini-3.5-flash-lite` for faster responses. In testing on a free key, `gemini-3.8-flash` did not respond at all, so it is not the default. Rate-limit (429) and temporary errors are retried once.
 - **Without a key**, or if a Gemini call fails, is blocked or times out, a built-in rule-based engine generates symptom-specific follow-ups and a summary, so the intake never gets stuck. The server prints which mode is active on startup.
@@ -103,7 +234,7 @@ npm run seed
 
 The API key is read only by the server and is never sent to the browser.
 
-## The two journeys
+## User journeys in detail
 
 **Patient:** Landing → *I'm a patient* → describe symptoms (text or voice) → 4 standard questions → up to 2 rounds of AI follow-ups (max 8 questions, optional, can finish early) → review the summary and edit any answer → confirm → confirmation, Like button and optional written feedback → *Finish* clears the session from the computer.
 
@@ -113,7 +244,7 @@ Every question except the first offers **Not applicable**, **Don't know / Not su
 
 ## Safety design
 
-- **Urgent symptoms.** Every free-text answer goes through a deterministic red-flag screen (`server/src/safety.js`) before any AI call. It covers chest pain, breathing difficulty, stroke signs, collapse or seizure, severe bleeding, anaphylaxis, self-harm, thunderclap headache and similar, with simple negation handling. The AI follow-up step can also flag urgency. When urgency is detected, the routine questions stop and the patient is told to alert staff or call emergency services (112). The server then refuses any further intake calls for that session, and the doctor dashboard shows the session as **Urgent – escalated**.
+- **Urgent symptoms.** Every free-text answer goes through a deterministic red-flag screen (`server/src/safety.js`) before any AI call. It covers chest pain, breathing difficulty, stroke signs, collapse or seizure, severe bleeding, anaphylaxis, self-harm, thunderclap headache, loss of bladder or bowel control and similar, with simple negation handling. The AI follow-up step can also flag urgency. When urgency is detected, the routine questions stop and the patient is told to alert staff or call emergency services (112). The server then refuses any further intake calls for that session, and the doctor dashboard shows the session as **Urgent – escalated**.
 - **No diagnosis or advice.** The system prompt forbids diagnosis, causes, treatment, medication and reassurance. Patient text is wrapped as data, and the prompt says to ignore any instructions inside it.
 - **No invented facts.** Duration, severity, body parts, pattern, and the lists of unanswered and not-applicable questions are filled in by code straight from the patient's answers. The LLM only extracts symptom phrases, picks informative follow-up answers and writes a neutral "Patient reports…" overview. Any follow-up answer it returns is checked against the questions that were actually asked.
 - **Patient confirmation.** A summary can only be submitted when it is current. Editing any answer marks it stale until it is regenerated.
@@ -128,9 +259,9 @@ Every question except the first offers **Not applicable**, **Don't know / Not su
 - On Vercel, HTTPS is automatic and cookies are marked `Secure`. For other hosts, deploy behind HTTPS with `NODE_ENV=production`.
 - Voice input uses the browser's Web Speech API (Chrome or Edge). In Chrome, audio is processed by the browser vendor's speech service. Review this before any real-world use. Patients can always type instead.
 
-## Product analytics
+## Metrics page
 
-The **Metrics** page in the signed-in doctor area (`/doctor/metrics`) shows the figures below. Patients cannot access it. Builders with server access can print the same report from the command line with `npm run metrics` (add `-- --json` for JSON).
+The **Metrics** page in the signed-in doctor area (`/doctor/metrics`) shows the product metrics listed above. Patients cannot access it. Builders with server access can print the same report from the command line with `npm run metrics` (add `-- --json` for JSON).
 
 - **Patient journey:** intakes started and completed, urgent escalations, summaries generated and confirmed, questions answered, feedback count, and **Summary Generation Rate** (summaries generated ÷ intakes started × 100).
 - **Drop-off by question:** for each question, how many patients reached it, answered it, skipped it, and left the intake there.
@@ -165,7 +296,3 @@ client/            React (Vite) app
 ```
 
 Local data is stored in `server/data/pglite` (git-ignored). To reset it, delete the `server/data` folder and run `npm run seed:demo`.
-
-## Not in scope for the MVP
-
-Diagnosis, medication or treatment recommendations, prescriptions, report interpretation, historical records, scheduling, billing, hospital management, multiple languages, advanced analytics and AI evaluation pipelines.
