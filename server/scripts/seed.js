@@ -9,7 +9,7 @@ import { createSession, logEvent, touch } from '../src/sessions.js';
 import { STANDARD_QUESTIONS } from '../src/questions.js';
 
 const email = (process.env.DOCTOR_EMAIL || '').trim().toLowerCase();
-const password = process.env.DOCTOR_PASSWORD || '';
+const password = (process.env.DOCTOR_PASSWORD || '').trim();
 const name = process.env.DOCTOR_NAME || 'Clinic Doctor';
 
 if (!email || password.length < 10) {

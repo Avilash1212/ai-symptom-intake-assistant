@@ -216,11 +216,7 @@ If you add Supabase through Vercel's **Storage** tab instead, Vercel sets `POSTG
 npm run seed:demo
 ```
 
-**To change the doctor password later:** update `DOCTOR_PASSWORD` in your local `.env` (with `DATABASE_URL` pointing at Supabase), then run:
-
-```bash
-npm run seed
-```
+**To change the doctor password later:** edit `DOCTOR_PASSWORD` in Vercel (**Settings → Environment Variables**), then redeploy. The account is updated to match on the next request. `/api/health` shows `"doctorAccount": "ready"` once the account matches the settings, or explains what is wrong.
 
 **Notes for serverless hosting:**
 - Each request may run on a different instance, so the login rate limit is counted per instance.

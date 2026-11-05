@@ -133,19 +133,41 @@ export async function one(sql, params = []) {
   return (await query(sql, params))[0];
 }
 
-// Creates the doctor account from DOCTOR_EMAIL / DOCTOR_PASSWORD if it does
-// not exist yet, so a fresh deployment can be signed into without running a script.
-async function bootstrapDoctor() {
+let doctorSetup = 'not checked yet';
+
+/** Plain-language state of the configured doctor account, for the health check. */
+export function doctorSetupStatus() {
+  return doctorSetup;
+}
+
+// Keeps the doctor account in line with DOCTOR_EMAIL / DOCTOR_PASSWORD /
+// DOCTOR_NAME: creates it on a fresh deployment, and updates the password
+// and name when they are changed in the hosting settings.
+async function syncDoctorFromEnv() {
   const email = (process.env.DOCTOR_EMAIL || '').trim().toLowerCase();
-  const password = process.env.DOCTOR_PASSWORD || '';
-  if (!email || password.length < 10) return;
-  const existing = await one('SELECT id FROM doctors WHERE email = $1', [email]);
-  if (existing) return;
-  await query(
-    'INSERT INTO doctors (email, name, password_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING',
-    [email, process.env.DOCTOR_NAME || 'Clinic Doctor', bcrypt.hashSync(password, 12), nowIso()],
-  );
-  console.log(`[db] Created doctor account ${email}`);
+  // Trim whitespace that often sneaks in when pasting into a settings page.
+  const password = (process.env.DOCTOR_PASSWORD || '').trim();
+  const name = (process.env.DOCTOR_NAME || '').trim() || 'Clinic Doctor';
+  if (!email) {
+    doctorSetup = 'DOCTOR_EMAIL is not set, so no doctor account was created.';
+    return;
+  }
+  if (password.length < 10) {
+    doctorSetup = 'DOCTOR_PASSWORD is missing or shorter than 10 characters, so the doctor account was not created or updated.';
+    return;
+  }
+  const existing = await one('SELECT id, name, password_hash FROM doctors WHERE email = $1', [email]);
+  if (!existing) {
+    await query(
+      'INSERT INTO doctors (email, name, password_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (email) DO NOTHING',
+      [email, name, bcrypt.hashSync(password, 12), nowIso()],
+    );
+    console.log(`[db] Created doctor account ${email}`);
+  } else if (!(await bcrypt.compare(password, existing.password_hash)) || existing.name !== name) {
+    await query('UPDATE doctors SET name = $1, password_hash = $2 WHERE id = $3', [name, bcrypt.hashSync(password, 12), existing.id]);
+    console.log(`[db] Updated doctor account ${email} from environment settings`);
+  }
+  doctorSetup = 'ready';
 }
 
 let readyPromise;
@@ -155,7 +177,7 @@ export function ready() {
   readyPromise ||= (async () => {
     const d = await getDriver();
     await d.exec(SCHEMA);
-    await bootstrapDoctor();
+    await syncDoctorFromEnv();
   })().catch((err) => {
     readyPromise = null;
     throw err;
